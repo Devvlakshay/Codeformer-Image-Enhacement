@@ -1,21 +1,24 @@
-from fastapi import FastAPI, UploadFile, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-import boto3, os, uuid
+import boto3
+import os
+import requests
+from urllib.parse import urlparse
 from io import BytesIO
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
-app = FastAPI(title="R2 Image Upload API")
+app = FastAPI(title="Cloudflare R2 API - Upload & Delete")
 
-# ======== Load R2 Configuration from .env ========
+# ====== R2 Configuration ======
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
 R2_ENDPOINT = os.getenv("R2_ENDPOINT")
 R2_BUCKET = os.getenv("R2_BUCKET")
 
-# Initialize the R2 Client
+# Initialize the R2 client
 s3 = boto3.client(
     "s3",
     endpoint_url=R2_ENDPOINT,
@@ -25,38 +28,43 @@ s3 = boto3.client(
 )
 
 
-# ========= API: Upload Image to R2 =========
-@app.post("/upload-to-r2")
-async def upload_to_r2(
-    file: UploadFile,
+# ========= 🟢 Upload image from URL =========
+@app.post("/upload-url-to-r2")
+def upload_image_from_url(
+    image_url: str = Form(...),
     user_id: str = Form(...)
 ):
     """
-    API to upload an image directly to Cloudflare R2.
-    - Receives an image + user_id
-    - Stores image in the bucket under user_id folder
-    - Returns uploaded file key and (optional) public URL
+    Upload image directly from a remote URL to Cloudflare R2.
+    - Keeps original filename
+    - Saves as uploads/{user_id}/{filename}
     """
 
     try:
-        # Read image into memory (no local saving)
-        image_bytes = await file.read()
+        # --- 1. Fetch image ---
+        response = requests.get(image_url, stream=True)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image: {response.status_code}")
 
-        # Generate unique filename
-        ext = file.filename.split(".")[-1]
-        unique_filename = f"{uuid.uuid4()}.{ext}"
-        r2_key = f"uploads/{user_id}/{unique_filename}"
+        # --- 2. Extract original filename ---
+        parsed = urlparse(image_url)
+        filename = os.path.basename(parsed.path)
+        if not filename:
+            raise HTTPException(status_code=400, detail="Unable to extract filename from URL")
 
-        # Upload directly to R2
+        # --- 3. R2 storage key ---
+        r2_key = f"uploads/{user_id}/{filename}"
+
+        # --- 4. Upload directly to R2 ---
         s3.upload_fileobj(
-            BytesIO(image_bytes),
+            BytesIO(response.content),
             R2_BUCKET,
             r2_key,
-            ExtraArgs={"ContentType": file.content_type or "image/jpeg"}
+            ExtraArgs={"ContentType": response.headers.get("Content-Type", "image/jpeg")}
         )
 
-        # Optional: Generate pre-signed URL (1-hour access)
-        url = s3.generate_presigned_url(
+        # --- 5. Generate presigned URL (optional) ---
+        presigned_url = s3.generate_presigned_url(
             "get_object",
             Params={"Bucket": R2_BUCKET, "Key": r2_key},
             ExpiresIn=3600
@@ -64,9 +72,44 @@ async def upload_to_r2(
 
         return JSONResponse({
             "status": "success",
-            "message": "Image uploaded successfully to R2",
+            "message": f"Image uploaded successfully to R2 at {r2_key}",
             "r2_key": r2_key,
-            "presigned_url": url
+            "presigned_url": presigned_url
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+# ========= 🔴 Delete image from R2 =========
+@app.delete("/delete-from-r2")
+def delete_from_r2(
+    user_id: str = Form(...),
+    filename: str = Form(...)
+):
+    """
+    Delete an image from R2 bucket.
+    Expects: user_id and filename (original filename)
+    Deletes file from uploads/{user_id}/{filename}
+    """
+
+    try:
+        r2_key = f"uploads/{user_id}/{filename}"
+
+        # --- Check if object exists ---
+        try:
+            s3.head_object(Bucket=R2_BUCKET, Key=r2_key)
+        except s3.exceptions.ClientError:
+            raise HTTPException(status_code=404, detail="File not found in R2")
+
+        # --- Delete object ---
+        s3.delete_object(Bucket=R2_BUCKET, Key=r2_key)
+
+        return JSONResponse({
+            "status": "success",
+            "message": f"File deleted successfully from R2: {r2_key}",
+            "r2_key": r2_key
         })
 
     except Exception as e:

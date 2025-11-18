@@ -149,6 +149,75 @@ def upload_image_from_url(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ========= 🟢 Upload local file from server filesystem =========
+@app.post("/upload-local-file-to-r2")
+async def upload_local_file_to_r2(
+    file_path: str = Form(...),
+    r2_key: str = Form(...)
+):
+    """
+    Upload a local file from the server's filesystem to R2.
+    Called by main2.py after image enhancement.
+    
+    Args:
+        file_path: Full path to the file on server filesystem
+        r2_key: R2 storage key (e.g., uploads/12345/image.jpg)
+    
+    Returns:
+        JSON with success status, public_url, and r2_key
+    """
+    try:
+        # Validate file exists
+        file_path_obj = Path(file_path)
+        if not file_path_obj.exists():
+            raise HTTPException(status_code=400, detail=f"File not found: {file_path}")
+        
+        if not file_path_obj.is_file():
+            raise HTTPException(status_code=400, detail=f"Path is not a file: {file_path}")
+        
+        file_size = file_path_obj.stat().st_size
+        
+        # Determine content type from file extension
+        import mimetypes
+        content_type, _ = mimetypes.guess_type(str(file_path_obj))
+        content_type = content_type or "application/octet-stream"
+        
+        # Upload to R2 using upload_fileobj
+        with open(file_path_obj, 'rb') as f:
+            s3.upload_fileobj(
+                f,
+                R2_BUCKET,
+                r2_key,
+                ExtraArgs={"ContentType": content_type}
+            )
+        
+        # Generate public URL
+        public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{r2_key}" if R2_PUBLIC_URL else None
+        
+        # Generate presigned URL (optional, for private access)
+        presigned_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": R2_BUCKET, "Key": r2_key},
+            ExpiresIn=3600
+        )
+        
+        return JSONResponse({
+            "status": "success",
+            "message": f"File uploaded successfully to R2",
+            "r2_key": r2_key,
+            "file_path": file_path,
+            "file_size": file_size,
+            "public_url": public_url,
+            "presigned_url": presigned_url,
+            "content_type": content_type
+        })
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
 # ========= 🔴 Delete image from R2 =========
 @app.delete("/delete-from-r2")
 def delete_from_r2(
@@ -191,6 +260,7 @@ def root():
         "endpoints": {
             "upload_file": "/upload-file-to-r2 (POST)",
             "upload_url": "/upload-url-to-r2 (POST)",
+            "upload_local_file": "/upload-local-file-to-r2 (POST) - For main2.py",
             "delete": "/delete-from-r2 (DELETE)"
         }
     }

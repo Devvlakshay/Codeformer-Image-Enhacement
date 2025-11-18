@@ -49,7 +49,7 @@ R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
 R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
 R2_BUCKET = os.getenv("R2_BUCKET")
 R2_ENDPOINT = os.getenv("R2_ENDPOINT")
-R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL")
+R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "https://cdn.qoneqt.com/")
 
 # Initialize R2 client
 def get_r2_client():
@@ -131,43 +131,66 @@ def parse_r2_url(url: str) -> dict:
 
 def upload_to_r2(file_path: Path, r2_key: str) -> dict:
     """
-    Upload file to R2 bucket
+    Upload file to R2 via server.py endpoint.
+    Delegates to server.py (port 8001) for reliable uploads.
+    
     Returns: dict with success status and public URL
     """
+    SERVER_URL = "http://localhost:8001/upload-local-file-to-r2"
+    
     try:
-        r2_client = get_r2_client()
+        print(f"\n{'='*60}")
+        print(f"UPLOADING TO R2 VIA server.py")
+        print(f"{'='*60}")
+        print(f"File: {file_path}")
+        print(f"R2 key: {r2_key}")
+        print(f"Calling: {SERVER_URL}")
         
-        # Determine content type
-        content_type = mimetypes.guess_type(str(file_path))[0] or 'application/octet-stream'
+        # Call server.py upload endpoint
+        response = requests.post(
+            SERVER_URL,
+            data={
+                "file_path": str(file_path),
+                "r2_key": r2_key
+            },
+            timeout=60
+        )
         
-        # Upload file
-        with open(file_path, 'rb') as f:
-            r2_client.put_object(
-                Bucket=R2_BUCKET,
-                Key=r2_key,
-                Body=f,
-                ContentType=content_type
-            )
+        print(f"Response status: {response.status_code}")
         
-        # Construct public URL
-        public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
+        if response.status_code != 200:
+            error_msg = f"Server error {response.status_code}: {response.text}"
+            print(f"✗ Upload failed: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
+            }
+        
+        result = response.json()
+        print(f"✓ Upload successful!")
+        print(f"Public URL: {result.get('public_url')}")
+        print(f"{'='*60}\n")
         
         return {
             "success": True,
-            "public_url": public_url,
-            "r2_key": r2_key
+            "public_url": result.get("public_url"),
+            "r2_key": result.get("r2_key")
         }
-    except ClientError as e:
-        print(f"R2 upload error: {str(e)}")
+        
+    except requests.exceptions.ConnectionError as e:
+        error_msg = f"Cannot connect to server.py at {SERVER_URL}. Make sure server.py is running on port 8001."
+        print(f"✗ {error_msg}")
+        print(f"Error: {str(e)}\n")
         return {
             "success": False,
-            "error": f"R2 upload failed: {str(e)}"
+            "error": error_msg
         }
     except Exception as e:
-        print(f"Unexpected error uploading to R2: {str(e)}")
+        error_msg = f"Upload to server.py failed: {str(e)}"
+        print(f"✗ {error_msg}\n")
         return {
             "success": False,
-            "error": f"Upload failed: {str(e)}"
+            "error": error_msg
         }
 
 
@@ -369,7 +392,7 @@ async def health_check():
     inference_script_exists = (CODEFORMER_DIR / "inference_codeformer.py").exists()
     
     # Check R2 connection
-    r2_configured = all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET])
+    r2_configured = all([R2_ENDPOINT, R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET])
     r2_accessible = False
     
     if r2_configured:

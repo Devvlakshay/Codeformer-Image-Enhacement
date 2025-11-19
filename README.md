@@ -1,167 +1,682 @@
-<p align="center">
-  <img src="assets/CodeFormer_logo.png" height=110>
-</p>
+# CodeFormer - Dual-Server Image Enhancement API
 
-## Towards Robust Blind Face Restoration with Codebook Lookup Transformer (NeurIPS 2022)
+A FastAPI-based image enhancement service powered by CodeFormer, with Cloudflare R2 cloud storage integration and automatic CDN cache purging.
 
-[Paper](https://arxiv.org/abs/2206.11253) | [Project Page](https://shangchenzhou.com/projects/CodeFormer/) | [Video](https://youtu.be/d3VDpkXlueI)
+## Architecture Overview
 
+This project uses a **dual-server architecture** for separation of concerns:
 
-<a href="https://colab.research.google.com/drive/1m52PNveE4PBhYrecj34cnpEeiHcC5LTb?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="google colab logo"></a> [![Hugging Face](https://img.shields.io/badge/Demo-%F0%9F%A4%97%20Hugging%20Face-blue)](https://huggingface.co/spaces/sczhou/CodeFormer) [![Replicate](https://img.shields.io/badge/Demo-%F0%9F%9A%80%20Replicate-blue)](https://replicate.com/sczhou/codeformer) [![OpenXLab](https://img.shields.io/badge/Demo-%F0%9F%90%BC%20OpenXLab-blue)](https://openxlab.org.cn/apps/detail/ShangchenZhou/CodeFormer) ![Visitors](https://api.infinitescript.com/badgen/count?name=sczhou/CodeFormer&ltext=Visitors)
+- **main2.py (Port 8000)**: Image Enhancement Service
+  - Handles image downloading, CodeFormer processing, and result coordination
+  - Processes enhancement, colorization, and inpainting requests
+  - Delegates all R2 uploads to server.py via HTTP
 
+- **server.py (Port 8001)**: Unified Upload Service  
+  - Centralized file upload handler with proven working code
+  - Supports three upload modes: form-data files, remote URLs, local files
+  - Implements Cloudflare cache purging after successful uploads
+  - Manages R2 bucket operations (upload, delete)
 
-[Shangchen Zhou](https://shangchenzhou.com/), [Kelvin C.K. Chan](https://ckkelvinchan.github.io/), [Chongyi Li](https://li-chongyi.github.io/), [Chen Change Loy](https://www.mmlab-ntu.com/person/ccloy/) 
-
-S-Lab, Nanyang Technological University
-
-<img src="assets/network.jpg" width="800px"/>
-
-
-:star: If CodeFormer is helpful to your images or projects, please help star this repo. Thanks! :hugs: 
-
-
-### Update
-- **2023.07.20**: Integrated to :panda_face: [OpenXLab](https://openxlab.org.cn/apps). Try out online demo! [![OpenXLab](https://img.shields.io/badge/Demo-%F0%9F%90%BC%20OpenXLab-blue)](https://openxlab.org.cn/apps/detail/ShangchenZhou/CodeFormer)
-- **2023.04.19**: :whale: Training codes and config files are public available now.
-- **2023.04.09**: Add features of inpainting and colorization for cropped and aligned face images.
-- **2023.02.10**: Include `dlib` as a new face detector option, it produces more accurate face identity.
-- **2022.10.05**: Support video input `--input_path [YOUR_VIDEO.mp4]`. Try it to enhance your videos! :clapper: 
-- **2022.09.14**: Integrated to :hugs: [Hugging Face](https://huggingface.co/spaces). Try out online demo! [![Hugging Face](https://img.shields.io/badge/Demo-%F0%9F%A4%97%20Hugging%20Face-blue)](https://huggingface.co/spaces/sczhou/CodeFormer)
-- **2022.09.09**: Integrated to :rocket: [Replicate](https://replicate.com/explore). Try out online demo! [![Replicate](https://img.shields.io/badge/Demo-%F0%9F%9A%80%20Replicate-blue)](https://replicate.com/sczhou/codeformer)
-- [**More**](docs/history_changelog.md)
-
-### TODO
-- [x] Add training code and config files
-- [x] Add checkpoint and script for face inpainting
-- [x] Add checkpoint and script for face colorization
-- [x] ~~Add background image enhancement~~
-
-#### :panda_face: Try Enhancing Old Photos / Fixing AI-arts
-[<img src="assets/imgsli_1.jpg" height="226px"/>](https://imgsli.com/MTI3NTE2) [<img src="assets/imgsli_2.jpg" height="226px"/>](https://imgsli.com/MTI3NTE1) [<img src="assets/imgsli_3.jpg" height="226px"/>](https://imgsli.com/MTI3NTIw) 
-
-#### Face Restoration
-
-<img src="assets/restoration_result1.png" width="400px"/> <img src="assets/restoration_result2.png" width="400px"/>
-<img src="assets/restoration_result3.png" width="400px"/> <img src="assets/restoration_result4.png" width="400px"/>
-
-#### Face Color Enhancement and Restoration
-
-<img src="assets/color_enhancement_result1.png" width="400px"/> <img src="assets/color_enhancement_result2.png" width="400px"/>
-
-#### Face Inpainting
-
-<img src="assets/inpainting_result1.png" width="400px"/> <img src="assets/inpainting_result2.png" width="400px"/>
-
-
-
-### Dependencies and Installation
-
-- Pytorch >= 1.7.1
-- CUDA >= 10.1
-- Other required packages in `requirements.txt`
 ```
-# git clone this repository
-git clone https://github.com/sczhou/CodeFormer
+┌─────────────────────────────────────────────────────────────┐
+│                 API Request                                 │
+│   POST /enhance (with image_url and user_id)                │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     ▼
+        ┌──────────────────────────────────┐
+        │      main2.py (Port 8000)        │
+        │  ┌──────────────────────────────┐│
+        │  │ 1. Download image            ││
+        │  │ 2. CodeFormer processing     ││
+        │  │ 3. Save enhanced image       ││
+        │  └──────────────────────────────┘│
+        │           │                       │
+        │           ▼                       │
+        │  HTTP POST /upload-local-file-to-r2
+        │  - file_path: /tmp/enhanced.jpg  │
+        │  - r2_key: uploads/user_id/file │
+        └────────────┬─────────────────────┘
+                     │
+                     ▼
+        ┌──────────────────────────────────┐
+        │      server.py (Port 8001)       │
+        │  ┌──────────────────────────────┐│
+        │  │ 1. Read local file           ││
+        │  │ 2. Upload to R2              ││
+        │  │ 3. Purge Cloudflare CDN      ││
+        │  │ 4. Return public URL         ││
+        │  └──────────────────────────────┘│
+        └────────────┬─────────────────────┘
+                     │
+        ┌────────────▼─────────────────────┐
+        │  HTTP Response (JSON):           │
+        │  {                               │
+        │    "success": true,              │
+        │    "public_url": "https://...",  │
+        │    "r2_key": "uploads/123/..."   │
+        │  }                               │
+        └─────────────────────────────────┘
+```
+
+## Setup Instructions
+
+### 1. Prerequisites
+- Python 3.8+
+- Cloudflare R2 bucket with API credentials
+- Cloudflare account with cache purge API access
+- GPU recommended (CUDA for faster processing)
+
+### 2. Clone and Install Dependencies
+
+```bash
+git clone <repository-url>
 cd CodeFormer
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# create new anaconda env
-conda create -n codeformer python=3.8 -y
-conda activate codeformer
-
-# install python dependencies
-pip3 install -r requirements.txt
-python basicsr/setup.py develop
-conda install -c conda-forge dlib (only for face detection or cropping with dlib)
-```
-<!-- conda install -c conda-forge dlib -->
-
-### Quick Inference
-
-#### Download Pre-trained Models:
-Download the facelib and dlib pretrained models from [[Releases](https://github.com/sczhou/CodeFormer/releases/tag/v0.1.0) | [Google Drive](https://drive.google.com/drive/folders/1b_3qwrzY_kTQh0-SnBoGBgOrJ_PLZSKm?usp=sharing) | [OneDrive](https://entuedu-my.sharepoint.com/:f:/g/personal/s200094_e_ntu_edu_sg/EvDxR7FcAbZMp_MA9ouq7aQB8XTppMb3-T0uGZ_2anI2mg?e=DXsJFo)] to the `weights/facelib` folder. You can manually download the pretrained models OR download by running the following command:
-```
-python scripts/download_pretrained_models.py facelib
-python scripts/download_pretrained_models.py dlib (only for dlib face detector)
+pip install -r requirements.txt
 ```
 
-Download the CodeFormer pretrained models from [[Releases](https://github.com/sczhou/CodeFormer/releases/tag/v0.1.0) | [Google Drive](https://drive.google.com/drive/folders/1CNNByjHDFt0b95q54yMVp6Ifo5iuU6QS?usp=sharing) | [OneDrive](https://entuedu-my.sharepoint.com/:f:/g/personal/s200094_e_ntu_edu_sg/EoKFj4wo8cdIn2-TY2IV6CYBhZ0pIG4kUOeHdPR_A5nlbg?e=AO8UN9)] to the `weights/CodeFormer` folder. You can manually download the pretrained models OR download by running the following command:
-```
-python scripts/download_pretrained_models.py CodeFormer
+### 3. Configure Environment Variables
+
+Create a `.env` file in the project root with the following variables:
+
+```env
+# === R2 Configuration ===
+R2_ACCESS_KEY=your_r2_access_key
+R2_SECRET_KEY=your_r2_secret_key
+R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+R2_BUCKET=your_bucket_name
+R2_PUBLIC_URL=https://cdn.yourdomain.com  # Or your R2 public URL
+
+# === Cloudflare Cache Purge (Optional) ===
+X_AUTH_EMAIL=your_cloudflare_email@example.com
+X_AUTH_KEY=your_cloudflare_api_key
+CLOUDFLARE_ZONE_ID=your_zone_id  # Optional: for specific zone purging
+
+# === Server Configuration ===
+LOG_LEVEL=INFO
 ```
 
-#### Prepare Testing Data:
-You can put the testing images in the `inputs/TestWhole` folder. If you would like to test on cropped and aligned faces, you can put them in the `inputs/cropped_faces` folder. You can get the cropped and aligned faces by running the following command:
-```
-# you may need to install dlib via: conda install -c conda-forge dlib
-python scripts/crop_align_face.py -i [input folder] -o [output folder]
+### 4. Start the Services
+
+**Terminal 1 - Start server.py (Upload Service on Port 8001):**
+```bash
+source venv/bin/activate
+python server.py
+# Server starts at http://localhost:8001
 ```
 
-
-#### Testing:
-[Note] If you want to compare CodeFormer in your paper, please run the following command indicating `--has_aligned` (for cropped and aligned face), as the command for the whole image will involve a process of face-background fusion that may damage hair texture on the boundary, which leads to unfair comparison.
-
-Fidelity weight *w* lays in [0, 1]. Generally, smaller *w* tends to produce a higher-quality result, while larger *w* yields a higher-fidelity result. The results will be saved in the `results` folder.
-
-
-🧑🏻 Face Restoration (cropped and aligned face)
-```
-# For cropped and aligned faces (512x512)
-python inference_codeformer.py -w 0.5 --has_aligned --input_path [image folder]|[image path]
+**Terminal 2 - Start main2.py (Enhancement Service on Port 8000):**
+```bash
+source venv/bin/activate
+python main2.py
+# API starts at http://localhost:8000
 ```
 
-:framed_picture: Whole Image Enhancement
-```
-# For whole image
-# Add '--bg_upsampler realesrgan' to enhance the background regions with Real-ESRGAN
-# Add '--face_upsample' to further upsample restorated face with Real-ESRGAN
-python inference_codeformer.py -w 0.7 --input_path [image folder]|[image path]
+## API Endpoints
+
+### main2.py (Port 8000)
+
+#### 1. **GET** `/` - Health Check
+Returns available endpoints.
+
+```bash
+curl http://localhost:8000/
 ```
 
-:clapper: Video Enhancement
-```
-# For Windows/Mac users, please install ffmpeg first
-conda install -c conda-forge ffmpeg
-```
-```
-# For video clips
-# Video path should end with '.mp4'|'.mov'|'.avi'
-python inference_codeformer.py --bg_upsampler realesrgan --face_upsample -w 1.0 --input_path [video path]
+#### 2. **GET** `/health` - Service Health
+Returns server status and configuration info.
+
+```bash
+curl http://localhost:8000/health
 ```
 
-🌈 Face Colorization (cropped and aligned face)
-```
-# For cropped and aligned faces (512x512)
-# Colorize black and white or faded photo
-python inference_colorization.py --input_path [image folder]|[image path]
+#### 3. **POST** `/enhance` - Enhance Image
+Enhance image quality using CodeFormer face restoration.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8000/enhance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/image.jpg",
+    "user_id": "user_123",
+    "codeformer_weight": 0.7
+  }'
 ```
 
-🎨 Face Inpainting (cropped and aligned face)
+**Response:**
+```json
+{
+  "success": true,
+  "job_id": "job_abc123def456",
+  "status": "processing",
+  "message": "Enhancement job queued"
+}
 ```
-# For cropped and aligned faces (512x512)
-# Inputs could be masked by white brush using an image editing app (e.g., Photoshop) 
-# (check out the examples in inputs/masked_faces)
-python inference_inpainting.py --input_path [image folder]|[image path]
+
+Then poll for results:
+```bash
+curl http://localhost:8000/result/job_abc123def456
 ```
-### Training:
-The training commands can be found in the documents: [English](docs/train.md) **|** [简体中文](docs/train_CN.md).
 
-### Citation
-If our work is useful for your research, please consider citing:
+**Response (Complete):**
+```json
+{
+  "status": "completed",
+  "public_url": "https://cdn.yourdomain.com/uploads/user_123/image.jpg",
+  "r2_key": "uploads/user_123/image.jpg",
+  "processing_time": 15.3,
+  "file_size": 245632
+}
+```
 
-    @inproceedings{zhou2022codeformer,
-        author = {Zhou, Shangchen and Chan, Kelvin C.K. and Li, Chongyi and Loy, Chen Change},
-        title = {Towards Robust Blind Face Restoration with Codebook Lookup TransFormer},
-        booktitle = {NeurIPS},
-        year = {2022}
+**Parameters:**
+- `image_url` (string, required): URL of image to enhance
+- `user_id` (string, required): User identifier for organizing uploads
+- `codeformer_weight` (float, optional): Weight for CodeFormer (0.0-1.0, default: 0.7)
+
+#### 4. **POST** `/colorize` - Colorize Image
+Convert grayscale images to color.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8000/colorize \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/bw_image.jpg",
+    "user_id": "user_456"
+  }'
+```
+
+**Parameters:**
+- `image_url` (string, required): URL of grayscale image
+- `user_id` (string, required): User identifier
+
+#### 5. **POST** `/inpaint` - Inpaint Image
+Fill in masked regions of images.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8000/inpaint \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/masked_image.jpg",
+    "user_id": "user_789"
+  }'
+```
+
+**Parameters:**
+- `image_url` (string, required): URL of image with mask
+- `user_id` (string, required): User identifier
+
+#### 6. **GET** `/job/{job_id}` - Check Job Status
+Check processing status of a job.
+
+```bash
+curl http://localhost:8000/job/job_abc123def456
+```
+
+**Response:**
+```json
+{
+  "job_id": "job_abc123def456",
+  "status": "completed|processing|failed",
+  "progress": 100,
+  "error": null
+}
+```
+
+#### 7. **GET** `/result/{job_id}` - Get Result
+Retrieve the final result and CDN URL for a completed job.
+
+```bash
+curl http://localhost:8000/result/job_abc123def456
+```
+
+#### 8. **DELETE** `/result/{job_id}` - Delete Result
+Remove a result and clean up temporary files.
+
+```bash
+curl -X DELETE http://localhost:8000/result/job_abc123def456
+```
+
+---
+
+### server.py (Port 8001)
+
+#### 1. **GET** `/` - Available Endpoints
+Lists all available upload endpoints on this server.
+
+```bash
+curl http://localhost:8001/
+```
+
+#### 2. **POST** `/upload-file-to-r2` - Upload Form File
+Upload a file via multipart form-data.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8001/upload-file-to-r2 \
+  -F "file=@local_file.jpg" \
+  -F "r2_key=uploads/user_123/file.jpg"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "public_url": "https://cdn.yourdomain.com/uploads/user_123/file.jpg",
+  "r2_key": "uploads/user_123/file.jpg",
+  "file_size": 245632,
+  "content_type": "image/jpeg"
+}
+```
+
+#### 3. **POST** `/upload-url-to-r2` - Upload from URL
+Download image from URL and upload to R2.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8001/upload-url-to-r2 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/image.jpg",
+    "r2_key": "uploads/user_123/image.jpg"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "public_url": "https://cdn.yourdomain.com/uploads/user_123/image.jpg",
+  "r2_key": "uploads/user_123/image.jpg",
+  "file_size": 524288,
+  "content_type": "image/jpeg"
+}
+```
+
+#### 4. **POST** `/upload-local-file-to-r2` - Upload Local File
+Upload a local file from the filesystem (used by main2.py).
+
+**Request:**
+```bash
+curl -X POST http://localhost:8001/upload-local-file-to-r2 \
+  -d "file_path=/tmp/enhanced_image.jpg" \
+  -d "r2_key=uploads/user_123/enhanced.jpg"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "public_url": "https://cdn.yourdomain.com/uploads/user_123/enhanced.jpg",
+  "r2_key": "uploads/user_123/enhanced.jpg",
+  "file_size": 312456,
+  "content_type": "image/jpeg"
+}
+```
+
+**Parameters:**
+- `file_path` (string, required): Absolute path to local file
+- `r2_key` (string, required): Path in R2 bucket (e.g., `uploads/{user_id}/{filename}`)
+
+#### 5. **DELETE** `/delete-from-r2` - Delete File
+Remove a file from R2 bucket.
+
+**Request:**
+```bash
+curl -X DELETE http://localhost:8001/delete-from-r2 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "r2_key": "uploads/user_123/file.jpg"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "File deleted successfully",
+  "r2_key": "uploads/user_123/file.jpg"
+}
+```
+
+---
+
+## File Path Structure in R2
+
+All uploaded files follow this naming convention in R2:
+
+```
+uploads/
+├── user_123/
+│   ├── image_1.jpg
+│   ├── image_2.jpg
+│   └── enhanced_image.jpg
+├── user_456/
+│   ├── photo.jpg
+│   └── colorized_photo.jpg
+└── user_789/
+    └── restored_image.png
+```
+
+**Format:** `uploads/{user_id}/{original_filename}`
+
+This structure:
+- ✅ Preserves original filenames
+- ✅ Organizes files by user
+- ✅ Makes bulk operations easier
+- ✅ Simplifies CDN cache purging
+
+---
+
+## Cloudflare Integration
+
+### Cache Purging
+
+After successful file uploads, server.py automatically purges the Cloudflare CDN cache for the uploaded file URL.
+
+**How it works:**
+1. File uploaded to R2
+2. Public URL generated: `https://cdn.yourdomain.com/uploads/user_123/file.jpg`
+3. Cloudflare API called to purge cache for that URL
+4. Next request gets fresh content from origin
+
+**Requirements:**
+- `X_AUTH_EMAIL`: Your Cloudflare account email
+- `X_AUTH_KEY`: Cloudflare API key (not token)
+- `CLOUDFLARE_ZONE_ID`: (Optional) Specific zone ID; auto-detected if not provided
+
+### Manual Cache Purge
+
+If needed, manually purge CDN cache:
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/zones/{zone_id}/purge_cache" \
+  -H "X-Auth-Email: your-email@example.com" \
+  -H "X-Auth-Key: your_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [
+      "https://cdn.yourdomain.com/uploads/user_123/image.jpg"
+    ]
+  }'
+```
+
+---
+
+## Usage Examples
+
+### Complete Enhancement Workflow
+
+```bash
+# Step 1: Start both servers (in separate terminals)
+# Terminal 1:
+python server.py
+
+# Terminal 2:
+python main2.py
+
+# Step 2: Submit enhancement request
+JOB_ID=$(curl -s -X POST http://localhost:8000/enhance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://example.com/photo.jpg",
+    "user_id": "user_123",
+    "codeformer_weight": 0.7
+  }' | jq -r '.job_id')
+
+echo "Job ID: $JOB_ID"
+
+# Step 3: Poll for completion (every 2 seconds)
+while true; do
+  STATUS=$(curl -s http://localhost:8000/job/$JOB_ID | jq -r '.status')
+  echo "Status: $STATUS"
+  
+  if [ "$STATUS" == "completed" ]; then
+    break
+  fi
+  
+  sleep 2
+done
+
+# Step 4: Get result
+RESULT=$(curl -s http://localhost:8000/result/$JOB_ID)
+PUBLIC_URL=$(echo $RESULT | jq -r '.public_url')
+echo "Enhanced image: $PUBLIC_URL"
+
+# Step 5: Access via CDN
+open "$PUBLIC_URL"  # Or curl to verify
+```
+
+---
+
+## Troubleshooting
+
+### Issue: "Connection refused" when connecting to server.py
+- **Solution**: Ensure server.py is running on port 8001
+  ```bash
+  lsof -i :8001  # Check if port is in use
+  ```
+
+### Issue: R2 Upload Returns 403 (Forbidden)
+- **Solution**: Verify R2 credentials in `.env`
+  ```bash
+  cat .env | grep R2_
+  ```
+
+### Issue: CDN Images Not Updating
+- **Solution**: Cache was not purged (Cloudflare credentials may be missing)
+  ```bash
+  # Manually purge the specific file URL via Cloudflare dashboard
+  # Or set X_AUTH_EMAIL and X_AUTH_KEY in .env for automatic purging
+  ```
+
+### Issue: main2.py Cannot Connect to server.py
+- **Solution**: Both services must be running
+  ```bash
+  # Check both are listening:
+  netstat -tuln | grep 8000
+  netstat -tuln | grep 8001
+  ```
+
+### Issue: Image Processing Takes Too Long
+- **Solution**: GPU acceleration may not be enabled
+  ```bash
+  python -c "import torch; print(torch.cuda.is_available())"
+  # If False, install CUDA drivers and torch with CUDA support
+  ```
+
+---
+
+## Performance Notes
+
+- **Enhancement (main2.py)**: 10-30 seconds per image (CPU) / 2-5 seconds (GPU)
+- **Colorization**: 5-15 seconds per image
+- **Inpainting**: 15-40 seconds per image
+- **R2 Upload**: < 1 second for typical images
+- **Cloudflare Cache Purge**: < 500ms
+
+---
+
+## File Descriptions
+
+| File | Purpose |
+|------|---------|
+| `main2.py` | FastAPI enhancement service (Port 8000) |
+| `server.py` | Unified upload service (Port 8001) |
+| `inference_codeformer.py` | CodeFormer face restoration logic |
+| `inference_colorization.py` | Image colorization logic |
+| `inference_inpainting.py` | Image inpainting logic |
+| `requirements.txt` | Python dependencies |
+| `.env` | Environment configuration |
+
+---
+
+## Dependencies
+
+Key packages in `requirements.txt`:
+- **FastAPI** (0.104.1): Web framework
+- **Uvicorn** (0.24.0): ASGI server
+- **PyTorch**: Deep learning framework
+- **boto3** (1.26+): AWS S3/R2 client
+- **requests**: HTTP client for downloads
+- **python-dotenv**: Environment variable loading
+- **Pillow**: Image processing
+- **torchvision**: Vision utilities
+
+---
+
+## License
+
+[See LICENSE file](./LICENSE)
+        │    "r2_key": "uploads/123/..."   │
+        │  }                               │
+        └────────────┬─────────────────────┘
+                     │
+                     ▼
+        ┌──────────────────────────────────┐
+        │       main2.py receives          │
+        │       URL and returns to         │
+        │       client with               │
+        │       enhanced_url               │
+        └──────────────────────────────────┘
+```
+
+## Key Flow
+
+1. **Client** → main2.py: `POST /enhance`
+2. **main2.py**:
+   - Downloads original image from R2 URL
+   - Processes with CodeFormer
+   - Saves enhanced image to local file
+3. **main2.py** → **server.py**: `POST /upload-local-file-to-r2`
+   - Sends local file path + R2 key
+4. **server.py**:
+   - Validates file exists
+   - Uploads to R2 using `upload_fileobj()`
+   - Returns public URL
+5. **main2.py** → **Client**: Returns enhanced image URL
+
+## Code
+
+### In main2.py - The upload_to_r2() function
+
+```python
+def upload_to_r2(file_path: Path, r2_key: str) -> dict:
+    """Delegates to server.py for uploading"""
+    SERVER_URL = "http://localhost:8001/upload-local-file-to-r2"
+    
+    response = requests.post(
+        SERVER_URL,
+        data={
+            "file_path": str(file_path),
+            "r2_key": r2_key
+        },
+        timeout=60
+    )
+    
+    if response.status_code == 200:
+        result = response.json()
+        return {
+            "success": True,
+            "public_url": result.get("public_url"),
+            "r2_key": result.get("r2_key")
+        }
+    else:
+        return {"success": False, "error": response.text}
+```
+
+### In server.py - The new endpoint
+
+```python
+@app.post("/upload-local-file-to-r2")
+async def upload_local_file_to_r2(
+    file_path: str = Form(...),
+    r2_key: str = Form(...)
+):
+    """Upload local file to R2"""
+    
+    # Validate file exists
+    file_path_obj = Path(file_path)
+    if not file_path_obj.exists():
+        raise HTTPException(status_code=400, detail="File not found")
+    
+    # Upload to R2
+    with open(file_path_obj, 'rb') as f:
+        s3.upload_fileobj(f, R2_BUCKET, r2_key)
+    
+    # Return URL
+    public_url = f"{R2_PUBLIC_URL}/{r2_key}"
+    return {
+        "success": True,
+        "public_url": public_url,
+        "r2_key": r2_key
     }
+```
 
-### License
+## Benefits
 
-This project is licensed under <a rel="license" href="https://github.com/sczhou/CodeFormer/blob/master/LICENSE">NTU S-Lab License 1.0</a>. Redistribution and use should follow this license.
+✅ **Separation**: Upload logic centralized in server.py  
+✅ **Reliable**: Uses proven working upload code from server.py  
+✅ **Clear errors**: Can see exactly what failed  
+✅ **Scalable**: Multiple main2.py can use one server.py  
+✅ **Independent**: Can debug/restart servers separately  
 
-### Acknowledgement
+## How to Use
 
-This project is based on [BasicSR](https://github.com/XPixelGroup/BasicSR). Some codes are brought from [Unleashing Transformers](https://github.com/samb-t/unleashing-transformers), [YOLOv5-face](https://github.com/deepcam-cn/yolov5-face), and [FaceXLib](https://github.com/xinntao/facexlib). We also adopt [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) to support background image enhancement. Thanks for their awesome works.
+### Start Both Servers
 
-### Contact
-If you have any questions, please feel free to reach me out at `shangchenzhou@gmail.com`. 
+```bash
+# Terminal 1 - Start server.py (uploads)
+python server.py
+# Runs on http://localhost:8001
+
+# Terminal 2 - Start main2.py (processing)
+python main2.py
+# Runs on http://localhost:8000
+```
+
+### Test Image Enhancement
+
+```bash
+curl -X POST http://localhost:8000/enhance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "https://cdn.qoneqt.xyz/uploads/35936/image.jpg",
+    "user_id": "35936"
+  }'
+```
+
+### What Happens
+
+1. main2.py downloads the image
+2. Runs CodeFormer enhancement
+3. Calls `http://localhost:8001/upload-local-file-to-r2`
+4. server.py uploads the enhanced image to R2
+5. Returns URL to client
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `Cannot connect to server.py` | Make sure server.py is running on port 8001 |
+| `File not found` | Check if CodeFormer actually created the file |
+| `R2 upload error` | Check .env has correct R2 credentials |
+| `Connection refused` | Check ports: `lsof -i:8001` and `lsof -i:8000` |
+
+## Logs to Check
+
+```bash
+# Check main2.py logs
+tail -f main2.log
+
+# Check server.py logs
+tail -f server.log
+```
+
+Look for "UPLOADING TO R2 VIA server.py" in main2.py logs to confirm it's delegating correctly.
